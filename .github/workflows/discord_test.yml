@@ -1,0 +1,30 @@
+name: ⚡ Discord Upload Quick Test (10s)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-upload:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install Dependencies
+      run: pip install requests
+
+    - name: Create Dummy Report File
+      run: |
+        mkdir -p reports
+        echo "This is a secure encryption test dummy data" > reports/passive_recon_report_v999.xlsx
+
+    - name: Upload Final Excel Report to Private Discord
+      env:
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      run: |
+        python upload_to_discord.py
