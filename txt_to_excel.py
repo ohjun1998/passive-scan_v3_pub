@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 import os
 import glob
-import urllib.parse
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
+import csv
+import zipfile
 
-def build_advanced_excel_report():
-    print("[+] Initializing Intelligent Excel Reporter Engine (Perfect Deduplication Mode)...", flush=True)
+def build_csv_zip_report():
+    print("[+] Initializing Ultra-Fast CSV/ZIP Matrix Engine...", flush=True)
     
     # 1. 마스터 타깃 목록 로드
     if not os.path.exists('targets.txt'):
@@ -16,8 +15,7 @@ def build_advanced_excel_report():
     with open('targets.txt', 'r') as f:
         targets = [line.strip() for line in f if line.strip()]
 
-    # [구조 개조] 툴 간의 URL 중복을 완전히 깨부수기 위해 딕셔너리 내부 딕셔너리 구조 채택
-    # { 도메인: { URL: set(발견한도구들) } }
+    # 완벽한 중복 제거 구조: { 도메인: { URL: set(도구들) } }
     matrix_data = {domain: {} for domain in targets}
 
     # 2. 12대 가상머신 데이터 전수조사
@@ -32,26 +30,19 @@ def build_advanced_excel_report():
     
     for file_path in txt_files:
         filename = os.path.basename(file_path).lower()
-        
-        if 'secretfinder' in filename:
-            source_tool = 'SecretFinder'
-        elif 'waybackurls' in filename:
-            source_tool = 'Waybackurls'
-        elif 'gau' in filename:
-            source_tool = 'GAU'
-        else:
-            source_tool = 'Combined-Engine'
+        if 'secretfinder' in filename: source_tool = 'SecretFinder'
+        elif 'waybackurls' in filename: source_tool = 'Waybackurls'
+        elif 'gau' in filename: source_tool = 'GAU'
+        else: source_tool = 'Combined-Engine'
 
         try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 for line in f:
                     url = line.strip()
-                    if not url or url.startswith('#'):
-                        continue
+                    if not url or url.startswith('#'): continue
                     
                     for domain in targets:
                         if domain in url:
-                            # 동일 도메인 내에 이미 존재하는 URL이면 발견 도구만 추가 세팅 (행 증식 차단)
                             if url not in matrix_data[domain]:
                                 matrix_data[domain][url] = set()
                             matrix_data[domain][url].add(source_tool)
@@ -59,125 +50,93 @@ def build_advanced_excel_report():
         except Exception as e:
             print(f"[-] Error reading {filename}: {e}", flush=True)
 
-    # 3. 엑셀 문서 빌드 시작
-    print("[+] Compiling Optimized Dashboard & High Risk sheets...", flush=True)
-    wb = Workbook()
+    # 3. 임시 폴더 기틀 마련
+    temp_dir = 'reports/csv_chunks'
+    os.makedirs(temp_dir, exist_ok=True)
+    generated_files = []
 
-    font_header = Font(name='Malgun Gothic', size=11, bold=True, color='FFFFFF')
-    fill_header = PatternFill(start_color='1F4E78', end_color='1F4E78', fill_type='solid')
-    align_center = Alignment(horizontal='center', vertical='center')
+    # -----------------------------------------------------------------
+    # [🔥대시보드 & 하이리스크 파일 선발 발급 가동]
+    # -----------------------------------------------------------------
+    dash_file = os.path.join(temp_dir, "00_Dashboard.csv")
+    high_file = os.path.join(temp_dir, "01_High_Risk_Targets.csv")
+    generated_files.extend([dash_file, high_file])
 
-    # 1번째 탭: 대시보드
-    ws_dash = wb.active
-    ws_dash.title = "Dashboard"
-    dash_headers = ["No", "Target Domain (대상 도메인)", "Total URLs (총 URL 합계)", "SecretFinder Count (SecretFinder 탐지 건수)"]
-    ws_dash.append(dash_headers)
-    ws_dash.row_dimensions[1].height = 26
-    for col_num, text in enumerate(dash_headers, 1):
-        cell = ws_dash.cell(row=1, column=col_num)
-        cell.font = font_header
-        cell.fill = fill_header
-        cell.alignment = align_center
+    f_dash = open(dash_file, 'w', encoding='utf-8-sig', newline='')
+    f_high = open(high_file, 'w', encoding='utf-8-sig', newline='')
 
-    # 2번째 탭: 취약 자산 리스트
-    ws_high = wb.create_sheet(title="High Risk Targets")
-    high_headers = ["No", "Domain (도메인)", "High Risk URL / Endpoint (위험 주소)", "Source Tool (탐지 도구)", "Risk Reason (위험 사유)"]
-    ws_high.append(high_headers)
-    ws_high.row_dimensions[1].height = 26
-    for col_num, text in enumerate(high_headers, 1):
-        cell = ws_high.cell(row=1, column=col_num)
-        cell.font = font_header
-        cell.fill = fill_header
-        cell.alignment = align_center
+    writer_dash = csv.writer(f_dash)
+    writer_high = csv.writer(f_high)
+
+    # 대시보드 칼럼 요청 반영: No | 대상 도메인 | 총 URL 합계 | SecretFinder 탐지 건수
+    writer_dash.writerow(["No", "Target Domain (대상 도메인)", "Total URLs (총 URL 합계)", "SecretFinder Count (SecretFinder 탐지 건수)"])
+    writer_high.writerow(["No", "Domain (도메인)", "High Risk URL / Endpoint (위험 주소)", "Source Tool (탐지 도구)", "Risk Reason (위험 사유)"])
 
     high_risk_keywords = ['config', '.env', 'xml', 'json', 'secret', 'api/v', 'token', 'admin', 'password', 'key', 'credential', 'mysql']
     
     dash_idx = 1
     high_risk_idx = 1
-    sheets_created = 0
 
-    # 4. 데이터 매핑 및 시트 주입
-    print("[+] Injecting clean deduplicated data into Excel sheet matrix...", flush=True)
+    # 4. 개별 도메인 덤프 및 마스터 분석 연산
+    print("[+] Compiling structural CSV assets and matrix dashboards...", flush=True)
     for domain, url_map in matrix_data.items():
-        if not url_map:
-            continue  
-            
-        # [A] 대시보드 통계 계산 (완벽히 중복 제거된 순수 고유 URL 개수만 반영)
+        if not url_map: continue
+        
+        # [A] 대시보드 통계 기입 (중복 버블이 제거된 실존 고유 개수만 카운트)
         total_urls = len(url_map)
         secret_criticals = sum(1 for url, tools in url_map.items() if 'SecretFinder' in tools)
-        
-        ws_dash.append([dash_idx, domain, total_urls, secret_criticals])
+        writer_dash.writerow([dash_idx, domain, total_urls, secret_criticals])
         dash_idx += 1
 
-        # 알파벳 순 정렬
-        sorted_dataset = sorted(url_map.items(), key=lambda x: x[0])
+        # [B] 개별 도메인 전용 단독 CSV 생성 파일 오픈
+        domain_file_path = os.path.join(temp_dir, f"{domain}.csv")
+        generated_files.append(domain_file_path)
         
-        # [B] High Risk 자산 분류 로직
-        for url, tools in sorted_dataset:
-            is_high_risk = False
-            reason = ""
+        with open(domain_file_path, 'w', encoding='utf-8-sig', newline='') as f_dom:
+            writer_dom = csv.writer(f_dom)
+            writer_dom.writerow(["No", "Target URL / Endpoint (수집된 자산 주소)", "Source Tool (발견 도구)"])
             
-            if 'SecretFinder' in tools:
-                is_high_risk = True
-                reason = "SecretFinder 소스코드 내 보안 자격증명 노출 의심"
-            else:
-                url_lower = url.lower()
-                matched_keys = [key for key in high_risk_keywords if key in url_lower]
-                if matched_keys:
-                    is_high_risk = True
-                    reason = f"민감 엔드포인트 노출 파라미터 감지 ({', '.join(matched_keys)})"
-                    
-            if is_high_risk:
-                # 여러 도구에서 찾았으면 콤마로 연결 예: "GAU, Waybackurls"
+            sorted_dataset = sorted(url_map.items(), key=lambda x: x[0])
+            for idx, (url, tools) in enumerate(sorted_dataset, 1):
                 tools_str = ", ".join(sorted(list(tools)))
-                ws_high.append([high_risk_idx, domain, url, tools_str, reason])
-                high_risk_idx += 1
+                
+                # 순수 도메인 파일 기입
+                writer_dom.writerow([idx, url, tools_str])
+                
+                # [C] High Risk 자산 판별 및 기입
+                is_high_risk = False
+                reason = ""
+                if 'SecretFinder' in tools:
+                    is_high_risk = True
+                    reason = "SecretFinder 소스코드 내 보안 자격증명 노출 의심"
+                else:
+                    url_lower = url.lower()
+                    matched_keys = [key for key in high_risk_keywords if key in url_lower]
+                    if matched_keys:
+                        is_high_risk = True
+                        reason = f"민감 엔드포인트 노출 파라미터 감지 ({', '.join(matched_keys)})"
+                        
+                if is_high_risk:
+                    writer_high.writerow([high_risk_idx, domain, url, tools_str, reason])
+                    high_risk_idx += 1
 
-        # [C] 개별 도메인 전용 상세 시트 마감
-        safe_tab_name = domain[:30]
-        ws = wb.create_sheet(title=safe_tab_name)
-        sheets_created += 1
+    # 마스터 스트림 안전 마감
+    f_dash.close()
+    f_high.close()
 
-        headers = ["No", "Target URL / Endpoint (수집된 자산 주소)", "Source Tool (발견 도구)"]
-        ws.append(headers)
-        ws.row_dimensions[1].height = 26
-        for col_num in range(1, 4):
-            cell = ws.cell(row=1, column=col_num)
-            cell.font = font_header
-            cell.fill = fill_header
-            cell.alignment = align_center
+    # 5. 생성된 모든 CSV 자산을 단 하나의 마스터 ZIP 파일로 고압축 패킹
+    final_zip_path = 'reports/passive_recon_report_v1.zip'
+    print(f"[+] Bundling all assets into Master ZIP archive: {final_zip_path}", flush=True)
+    
+    with zipfile.ZipFile(final_zip_path, 'w', zipfile.ZIP_DEFLATED) as report_zip:
+        for file in generated_files:
+            if os.path.exists(file):
+                report_zip.write(file, arcname=os.path.basename(file))
+                os.remove(file) # 압축 완료된 원본 CSV 낱개 조각들은 즉시 삭제 청소
 
-        # 최종 본문 데이터 고속 사출
-        for idx, (url, tools) in enumerate(sorted_dataset, 1):
-            if idx > 1048500:
-                break
-            tools_str = ", ".join(sorted(list(tools)))
-            ws.append([idx, url, tools_str])
-
-        ws.column_dimensions['A'].width = 8
-        ws.column_dimensions['B'].width = 85
-        ws.column_dimensions['C'].width = 18
-
-    # 5. 최상단 마스터 탭 2개 레이아웃 가로폭 최종 확정
-    ws_dash.column_dimensions['A'].width = 8
-    ws_dash.column_dimensions['B'].width = 35
-    ws_dash.column_dimensions['C'].width = 25
-    ws_dash.column_dimensions['D'].width = 25
-
-    ws_high.column_dimensions['A'].width = 8
-    ws_high.column_dimensions['B'].width = 25
-    ws_high.column_dimensions['C'].width = 85
-    ws_high.column_dimensions['D'].width = 15
-    ws_high.column_dimensions['E'].width = 35
-
-    # 6. 마무리 및 마스터 파일 저장
-    if sheets_created > 0:
-        os.makedirs('reports', exist_ok=True)
-        report_path = 'reports/passive_recon_report_v1.xlsx'
-        wb.save(report_path)
-        print(f"[+] [SUCCESS] Master Report perfectly compressed and generated at: {report_path}", flush=True)
-    else:
-        print("[-] Error: Scan results were empty. Excel file not created.", flush=True)
+    try: os.rmdir(temp_dir)
+    except: pass
+    print("[+] [SUCCESS] Lightweight ZIP report engine execution complete!", flush=True)
 
 if __name__ == '__main__':
-    build_advanced_excel_report()
+    build_csv_zip_report()
