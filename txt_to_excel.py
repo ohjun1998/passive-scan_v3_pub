@@ -6,9 +6,9 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 
 def build_advanced_excel_report():
-    print("[+] Initializing Intelligent Excel Reporter Engine...", flush=True)
+    print("[+] Initializing Intelligent Excel Reporter Engine (SecretFinder Dedicated Dashboard)...", flush=True)
     
-    # 1. 마스터 타깃 목록 로드 (탭 분할 기준점)
+    # 1. 마스터 타깃 목록 로드
     if not os.path.exists('targets.txt'):
         print("[-] Error: targets.txt missing.", flush=True)
         return
@@ -16,7 +16,7 @@ def build_advanced_excel_report():
     with open('targets.txt', 'r') as f:
         targets = [line.strip() for line in f if line.strip()]
 
-    # 도메인별 데이터 구조화
+    # 데이터 구조화
     matrix_data = {domain: set() for domain in targets}
 
     # 2. 12대 가상머신 데이터 전수조사
@@ -55,27 +55,82 @@ def build_advanced_excel_report():
         except Exception as e:
             print(f"[-] Error reading {filename}: {e}", flush=True)
 
-    # 3. 고속 초경량 엑셀 빌더 스테이지
-    print("[+] Compiling pure grid data into Excel sheets...", flush=True)
+    # 3. 엑셀 문서 빌드 시작
+    print("[+] Compiling SecretFinder Only Dashboard & High Risk sheets...", flush=True)
     wb = Workbook()
-    default_sheet = wb.active
 
-    # 상단 헤더 전용 스타일 (시트당 딱 1번만 실행되므로 부하 0%)
     font_header = Font(name='Malgun Gothic', size=11, bold=True, color='FFFFFF')
     fill_header = PatternFill(start_color='1F4E78', end_color='1F4E78', fill_type='solid')
     align_center = Alignment(horizontal='center', vertical='center')
 
+    # -----------------------------------------------------------------
+    # [🔥대시보드 전면 개조] gau, waybackurls 제거 -> 오직 SecretFinder 전용 통계
+    # -----------------------------------------------------------------
+    ws_dash = wb.active
+    ws_dash.title = "Dashboard"
+    dash_headers = ["No", "Target (대상 자산 주소 / URL)", "SecretFinder Count (보안 기밀 탐지 건수)"]
+    ws_dash.append(dash_headers)
+    ws_dash.row_dimensions[1].height = 26
+    for col_num, text in enumerate(dash_headers, 1):
+        cell = ws_dash.cell(row=1, column=col_num)
+        cell.font = font_header
+        cell.fill = fill_header
+        cell.alignment = align_center
+
+    # 2번째 탭: 취약 자산 리스트 기틀 유지
+    ws_high = wb.create_sheet(title="High Risk Targets")
+    high_headers = ["No", "Domain (도메인)", "High Risk URL / Endpoint (위험 주소)", "Source Tool (탐지 도구)", "Risk Reason (위험 사유)"]
+    ws_high.append(high_headers)
+    ws_high.row_dimensions[1].height = 26
+    for col_num, text in enumerate(high_headers, 1):
+        cell = ws_high.cell(row=1, column=col_num)
+        cell.font = font_header
+        cell.fill = fill_header
+        cell.alignment = align_center
+
+    high_risk_keywords = ['config', '.env', 'xml', 'json', 'secret', 'api/v', 'token', 'admin', 'password', 'key', 'credential', 'mysql']
+    
+    dash_idx = 1
+    high_risk_idx = 1
     sheets_created = 0
 
+    # 4. 데이터 매핑 및 시트 주입
+    print("[+] Injecting pure grid data into Excel sheet matrix...", flush=True)
     for domain, dataset in matrix_data.items():
         if not dataset:
             continue  
             
+        # [A] 대시보드 연산: 오직 SecretFinder 건수만 카운트 (gau, waybackurls 원천 배제)
+        secret_criticals = sum(1 for url, tool in dataset if tool == 'SecretFinder')
+        
+        ws_dash.append([dash_idx, domain, secret_criticals])
+        dash_idx += 1
+
+        # [B] High Risk 자산 분류 로직
+        sorted_dataset = sorted(list(dataset), key=lambda x: (x[1], x[0]))
+        for url, tool in sorted_dataset:
+            is_high_risk = False
+            reason = ""
+            
+            if tool == 'SecretFinder':
+                is_high_risk = True
+                reason = "SecretFinder 소스코드 내 보안 자격증명 노출 의심"
+            else:
+                url_lower = url.lower()
+                matched_keys = [key for key in high_risk_keywords if key in url_lower]
+                if matched_keys:
+                    is_high_risk = True
+                    reason = f"민감 엔드포인트 노출 파라미터 감지 ({', '.join(matched_keys)})"
+                    
+            if is_high_risk:
+                ws_high.append([high_risk_idx, domain, url, tool, reason])
+                high_risk_idx += 1
+
+        # [C] 3번째 탭부터 이어지는 개별 도메인 전용 시트 생성
         safe_tab_name = domain[:30]
         ws = wb.create_sheet(title=safe_tab_name)
         sheets_created += 1
 
-        # 타이틀 디자인 빌드 (딱 1번만 수행)
         headers = ["No", "Target URL / Endpoint (수집된 자산 주소)", "Source Tool (발견 도구)"]
         ws.append(headers)
         ws.row_dimensions[1].height = 26
@@ -85,25 +140,33 @@ def build_advanced_excel_report():
             cell.fill = fill_header
             cell.alignment = align_center
 
-        # 본문 데이터 고속 사출 (★초고속 치트키: 개별 셀 폰트/스타일/행높이 세팅 코드를 완벽히 삭제★)
-        sorted_dataset = sorted(list(dataset), key=lambda x: (x[1], x[0]))
+        # 데이터 고속 사출 (성능 부하 원인 완전 제거)
         for idx, (url, tool) in enumerate(sorted_dataset, 1):
-            if idx > 1048500: 
+            if idx > 1048500:
                 break
-            ws.append([idx, url, tool]) # 메모리 연산 없이 리스트 그대로 고속 직송
+            ws.append([idx, url, tool])
 
-        # 고정 레이아웃 가로폭 지정 (시트당 마지막에 딱 1번만 적용하므로 부하 0%)
         ws.column_dimensions['A'].width = 8
         ws.column_dimensions['B'].width = 85
         ws.column_dimensions['C'].width = 18
 
-    # 4. 파일 세이빙 마무리
+    # 5. 최상단 마스터 탭 2개 레이아웃 마감 (너비 조정)
+    ws_dash.column_dimensions['A'].width = 8
+    ws_dash.column_dimensions['B'].width = 45
+    ws_dash.column_dimensions['C'].width = 35
+
+    ws_high.column_dimensions['A'].width = 8
+    ws_high.column_dimensions['B'].width = 25
+    ws_high.column_dimensions['C'].width = 85
+    ws_high.column_dimensions['D'].width = 15
+    ws_high.column_dimensions['E'].width = 35
+
+    # 6. 마무리 및 마스터 파일 저장
     if sheets_created > 0:
-        wb.remove(default_sheet) 
         os.makedirs('reports', exist_ok=True)
         report_path = 'reports/passive_recon_report_v1.xlsx'
         wb.save(report_path)
-        print(f"[+] [SUCCESS] Clean lightweight report generated at: {report_path}", flush=True)
+        print(f"[+] [SUCCESS] Master Report with Dedicated SecretFinder Dashboard generated at: {report_path}", flush=True)
     else:
         print("[-] Error: Scan results were empty. Excel file not created.", flush=True)
 
